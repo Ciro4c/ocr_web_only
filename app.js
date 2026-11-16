@@ -560,17 +560,17 @@ function viewSettings() {
   const draw = () => {
     const arr = AIX.keys();
     list.replaceChildren(...(arr.length ? arr.map((k) => el("div", { class: "card" },
-      el("div", { class: "info" }, el("b", {}, `${k.status === "ok" ? "✅" : k.status === "bad" ? "❌" : "⚠"} ${AIX.NAMES[k.provider]}${AIX.FREE[k.provider] ? " (miễn phí)" : " (tính phí)"}`),
-        el("div", { class: "muted" }, `${AIX.mask(k.key)} · ${k.status === "ok" ? "đang dùng: " + k.models[0] : (k.err || "lỗi")}`),
-        ...(k.report || []).map((r) => el("small", { class: r.ok ? "" : "bad", style: "display:block" }, `${r.ok ? "✔" : "✘"} ${r.m}: ` + (r.ok ? (r.score == null ? r.err : `đọc đúng ${r.score}% · ${(r.ms / 1000).toFixed(1)} giây`) : r.err)))),
-      el("button", { onclick: async () => { msg.textContent = "Đang kiểm tra…"; await AIX.recheck(k.id, (t) => (msg.textContent = t)); msg.textContent = ""; render(); } }, "Kiểm tra lại"),
+      el("div", { class: "info" }, el("b", {}, `${k.status === "ok" ? "✅" : k.status === "testing" ? "⏳" : k.status === "bad" ? "❌" : "⚠"} ${AIX.NAMES[k.provider]}${AIX.FREE[k.provider] ? " (miễn phí)" : " (tính phí)"}`),
+        el("div", { class: "muted" }, `${AIX.mask(k.key)} · ${k.status === "ok" ? "dùng được ngay · ưu tiên: " + k.models[0] + (k.report?.some((r) => r.pending) ? " (đang kiểm thử thêm…)" : "") : k.status === "testing" ? "đang kiểm thử các model (chạy nền, tối đa ~30 giây)…" : (k.err || "lỗi")}`),
+        ...(k.report || []).map((r) => r.pending ? el("small", { class: "muted", style: "display:block" }, `⏳ ${r.m}: đang thử…`) : el("small", { class: r.ok ? "" : "bad", style: "display:block" }, `${r.ok ? "✔" : "✘"} ${r.m}: ` + (r.ok ? (r.score == null ? r.err : `đọc đúng ${r.score}% · ${(r.ms / 1000).toFixed(1)} giây`) : r.err)))),
+      el("button", { onclick: async () => { msg.textContent = "Đang kiểm tra…"; await AIX.recheck(k.id); msg.textContent = ""; } }, "Kiểm tra lại"),
       el("button", { onclick: () => { AIX.removeKey(k.id); render(); } }, "Xóa"))) : [el("p", { class: "muted" }, "Chưa có key nào. Khi chưa có key, ứng dụng dùng Tesseract trong máy.")]));
   };
   const add = el("button", { class: "primary", onclick: async () => {
     const lines = key.value.split(/[\s,;]+/).filter(Boolean); if (!lines.length) return;
     add.disabled = true; const out = [];
     for (const kv of lines) { msg.textContent = `Đang kiểm tra key ${AIX.mask(kv)}…`;
-      try { const k = await AIX.addKey(kv, "auto", (t) => (msg.textContent = t)); out.push(k.status === "ok" ? `✅ ${AIX.NAMES[k.provider]}: dùng ${k.models[0]} (đạt kiểm thử)` : `⚠ ${AIX.NAMES[k.provider]}: ${k.err}`); } catch (e) { out.push(`❌ ${AIX.mask(kv)}: ${e.message || e}`); } }
+      try { const k = await AIX.addKey(kv, "auto"); out.push(`⏳ ${AIX.NAMES[k.provider]}: key hợp lệ, đang kiểm thử model ở nền (xem bên dưới)`); } catch (e) { out.push(`❌ ${AIX.mask(kv)}: ${e.message || e}`); } }
     add.disabled = false; key.value = ""; msg.textContent = out.join("  |  "); draw();
   } }, "Kiểm tra, kiểm thử và thêm key");
   const main = el("main", {}, el("h2", {}, "Bộ đọc AI (tự động khi có key)"),
@@ -583,7 +583,7 @@ function viewSettings() {
     el("details", { class: "note" }, el("summary", {}, "Lấy key miễn phí ở đâu?"), el("ul", {},
       el("li", {}, "Gemini: aistudio.google.com/apikey (khuyến nghị, đọc tiếng Việt tốt)"), el("li", {}, "Groq: console.groq.com/keys"),
       el("li", {}, "OpenRouter: openrouter.ai/keys (dùng model có đuôi :free)"), el("li", {}, "Anthropic: console.anthropic.com (tính phí)"), el("li", {}, "xAI Grok (xai-…): console.x.ai (tính phí). Lưu ý Groq (gsk_…) và Grok (xai-…) là hai dịch vụ khác nhau."))));
-  draw(); return main;
+  draw(); const off = AIX.onChange(() => { if (document.body.contains(list)) draw(); else off(); }); return main;
 }
 
 async function viewLibrary() {

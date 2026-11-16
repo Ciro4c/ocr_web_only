@@ -18,8 +18,12 @@
   const mask = (k) => k.slice(0, 6) + "…" + k.slice(-4);
 
   async function jfetch(url, opt) {
-    let r; try { r = await fetch(url, opt); } catch (x) { const e = new Error(`Không kết nối được tới ${new URL(url).host} (mạng bị chặn, tiện ích chặn quảng cáo/VPN, hoặc đang mở file trực tiếp thay vì qua https). Chi tiết: ${x.message}`); e.status = 0; e.net = true; throw e; }
-    let j = null; try { j = await r.json(); } catch {}
+    opt = opt && opt.method ? opt : { timeout: 15000, ...(opt || {}) };
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), (opt && opt.timeout) || 30000); let r;
+    try { r = await fetch(url, { ...(opt || {}), signal: ctl.signal }); } catch (x) { clearTimeout(tm);
+      if (x.name === "AbortError") { const e = new Error(`Quá thời gian chờ ${new URL(url).host} (${Math.round(((opt && opt.timeout) || 30000) / 1000)} giây)`); e.status = 0; e.net = true; e.timeout = true; throw e; }
+      const e = new Error(`Không kết nối được tới ${new URL(url).host} (mạng bị chặn, tiện ích chặn quảng cáo/VPN, hoặc đang mở file trực tiếp thay vì qua https). Chi tiết: ${x.message}`); e.status = 0; e.net = true; throw e; }
+    let j = null; try { j = await r.json(); } catch {} clearTimeout(tm);
     if (!r.ok) { const m = j && (j.error?.message || (typeof j.error === "string" ? j.error : "") || j.message); const st = j && j.error && typeof j.error === "object" ? [j.error.status, j.error.details?.[0]?.reason].filter(Boolean).join("/") : ""; const e = new Error(`${m || "Lỗi"} (HTTP ${r.status}${st ? " " + st : ""})`); e.status = r.status; throw e; }
     return j;
   }
@@ -100,62 +104,76 @@
     g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.fillStyle = "#111"; g.font = "36px 'Times New Roman', Times, serif";
     TEST_LINES.forEach((t, i) => g.fillText(t, 40, 70 + i * 62)); return c;
   }
-  const dispatch = (u, b64, mime) => u.k.provider === "gemini" ? call.gemini(u, b64, mime) : u.k.provider === "anthropic" ? call.anthropic(u, b64, mime)
-    : call.openai(u, b64, mime, ({ groq: "https://api.groq.com/openai/v1/chat/completions", xai: "https://api.x.ai/v1/chat/completions" })[u.k.provider] || "https://openrouter.ai/api/v1/chat/completions");
-  async function testKey(k, onProgress) {
-    const img = testImage().toDataURL("image/jpeg", 0.9).split(",")[1], truth = TEST_LINES.join("\n"), report = [];
-    for (const m of k.cand) {
-      onProgress?.(`Đang kiểm thử ${NAMES[k.provider]} · ${m}…`);
+  const dispatch = (u, b64, mime, o) => u.k.provider === "gemini" ? call.gemini(u, b64, mime, o) : u.k.provider === "anthropic" ? call.anthropic(u, b64, mime, o)
+    : call.openai(u, b64, mime, ({ groq: "https://api.groq.com/openai/v1/chat/completions", xai: "https://api.x.ai/v1/chat/completions" })[u.k.provider] || "https://openrouter.ai/api/v1/chat/completions", o);
+  const listeners = new Set(); const emit = () => listeners.forEach((f) => { try { f(); } catch {} });
+  const update = (id, fn) => { const arr = keys(), k = arr.find((x) => x.id === id); if (k) { fn(k); save(arr); emit(); } return k; };
+  /* kiểm thử song song mọi model ứng viên; model đầu tiên đạt là key dùng được ngay, các model còn lại cập nhật dần */
+  async function testKey(id) {
+    const k0 = keys().find((x) => x.id === id); if (!k0) return;
+    const img = testImage().toDataURL("image/jpeg", 0.85).split(",")[1], truth = TEST_LINES.join("\n");
+    update(id, (k) => { k.status = k.status === "ok" ? "ok" : "testing"; k.report = k0.cand.map((m) => ({ m, pending: true })); k.err = ""; });
+    await Promise.all(k0.cand.map(async (m, i) => {
       const t0 = performance.now(); let row = { m };
       try {
-        const blocks = parse(await dispatch({ k, m }, img, "image/jpeg")), got = blocks.map((b) => b.text || "").join("\n");
-        row.score = Math.round(ratio(got, truth) * 100); row.ms = Math.round(performance.now() - t0); row.ok = row.score >= 80;
-        if (!row.ok) row.err = `đọc sai nhiều (${row.score}%)`;
+        const blocks = parse(await dispatch({ k: k0, m }, img, "image/jpeg", { test: true })), got = blocks.map((b) => b.text || "").join("\n");
+        row.score = Math.round(ratio(got, truth) * 100); row.ms = Math.round(performance.now() - t0); row.ok = row.score >= 80; if (!row.ok) row.err = `đọc sai nhiều (${row.score}%)`;
       } catch (e) {
         row.ms = Math.round(performance.now() - t0);
-        if (e.status === 429) { row.ok = true; row.score = null; row.err = "hết hạn mức tạm thời, chưa chấm được"; }
-        else { row.ok = false; row.err = e.message; }
+        if (e.status === 429) { row.ok = true; row.score = null; row.err = "hết hạn mức tạm thời, chưa chấm được"; } else { row.ok = false; row.err = e.message; }
       }
-      report.push(row);
-      if (row.ok && row.score >= 95) break;                    // đã đủ tốt, không cần thử thêm model rẻ hơn
-    }
-    const good = report.filter((r) => r.ok).sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.ms - b.ms);
-    k.report = report; k.models = good.map((r) => r.m);
-    k.status = good.length ? "ok" : "err"; k.err = good.length ? "" : "Key đúng nhưng không model nào đọc ảnh đạt: " + report.map((r) => `${r.m}: ${r.err}`).join(" | ");
-    k.checked = Date.now(); return k;
+      update(id, (k) => { k.report[i] = row; rank(k); });
+    }));
+    update(id, (k) => { rank(k, true); });
   }
-  async function addKey(raw, providerHint, onProgress) {
+  function rank(k, final) {
+    const done = k.report.filter((r) => !r.pending), good = done.filter((r) => r.ok).sort((a, b) => (b.score ?? 70) - (a.score ?? 70) || a.ms - b.ms);
+    k.models = good.map((r) => r.m);
+    if (good.length) { k.status = "ok"; k.err = ""; }
+    else if (final || !k.report.some((r) => r.pending)) { k.status = "err"; k.err = "Key đúng nhưng không model nào đọc ảnh đạt: " + done.map((r) => `${r.m}: ${r.err}`).join(" | "); }
+  }
+  async function addKey(raw, providerHint) {
     const key = raw.trim(); if (!key) throw new Error("Chưa nhập key.");
     let provider = providerHint && providerHint !== "auto" ? providerHint : detect(key), cand;
     if (keys().some((k) => k.key === key)) throw new Error("Key này đã có trong danh sách.");
     if (provider) cand = await verify[provider](key);
-    else {                                             // dạng key lạ: thử lần lượt từng nhà cung cấp
+    else {
       const errs = [];
-      for (const p of ORDER) { try { cand = await verify[p](key); provider = p; break; } catch (e) { errs.push(`${NAMES[p]}: ${e.message}`); } }
-      if (!provider) throw new Error("Không nhận ra loại key và không nhà cung cấp nào chấp nhận. " + errs.join(" | "));
+      const res = await Promise.all(ORDER.map(async (p) => { try { return { p, c: await verify[p](key) }; } catch (e) { errs.push(`${NAMES[p]}: ${e.message}`); return null; } }));
+      const hit = res.find(Boolean); if (!hit) throw new Error("Không nhận ra loại key và không nhà cung cấp nào chấp nhận. " + errs.join(" | "));
+      provider = hit.p; cand = hit.c;
     }
-    const k = { id: Math.random().toString(36).slice(2, 8), provider, key, cand, models: [], status: "err" };
-    await testKey(k, onProgress); const arr = keys(); arr.push(k); save(arr); return k;
+    const k = { id: Math.random().toString(36).slice(2, 8), provider, key, cand, models: [], status: "testing", report: [] };
+    const arr = keys(); arr.push(k); save(arr); emit();
+    testKey(k.id);                                   // chạy nền, giao diện tự cập nhật qua onChange
+    return k;
   }
-  async function recheck(id, onProgress) {
-    const arr = keys(), k = arr.find((x) => x.id === id); if (!k) return;
-    try { k.cand = await verify[k.provider](k.key); await testKey(k, onProgress); }
-    catch (e) { k.status = (e.status === 401 || e.status === 403 || (e.status === 400 && /key/i.test(e.message))) ? "bad" : "err"; k.err = e.message; k.checked = Date.now(); }
-    save(arr); return k;
+  async function recheck(id) {
+    const k = keys().find((x) => x.id === id); if (!k) return;
+    try { const cand = await verify[k.provider](k.key); update(id, (x) => { x.cand = cand; x.status = "testing"; }); testKey(id); }
+    catch (e) { update(id, (x) => { x.status = (e.status === 401 || e.status === 403 || (e.status === 400 && /key/i.test(e.message))) ? "bad" : "err"; x.err = e.message; }); }
   }
   const removeKey = (id) => save(keys().filter((k) => k.id !== id));
 
   /* ---- chọn đơn vị (key, model) kế tiếp ---- */
+  const st_ = (id) => { st(id).fail++; };
+  const stats = new Map();                                              // "keyId|model" -> {fail, ok, ms}
+  const st = (id) => { let x = stats.get(id); if (!x) stats.set(id, (x = { fail: 0, ok: 0, ms: 0 })); return x; };
+  function eff(k, m) {                                                    // điểm tổng hợp: chất lượng đo được − chậm − hay lỗi − tính phí
+    const r = (k.report || []).find((x) => x.m === m) || {}, s2 = st(k.id + "|" + m);
+    const q = r.score ?? 70, ms = s2.ok ? s2.ms / s2.ok : (r.ms || 4000);
+    return q - Math.min(8, ms / 3000) - s2.fail * 6 - (FREE[k.provider] ? 0 : 3);
+  }
   function units() {
     const now = Date.now(), out = [];
-    for (const k of keys()) if (k.status === "ok") for (const m of k.models) out.push({ k, m, c: cool.get(k.id + "|" + m) || 0 });
-    out.sort((a, b) => ORDER.indexOf(a.k.provider) - ORDER.indexOf(b.k.provider));
+    for (const k of keys()) if (k.status === "ok") for (const m of k.models) out.push({ k, m, c: cool.get(k.id + "|" + m) || 0, e: eff(k, m) });
+    out.sort((a, b) => b.e - a.e);
     return { out, now };
   }
   function pick(skip) {
     const { out, now } = units(), ready = out.filter((u) => u.c <= now && !skip.has(u.k.id + "|" + u.m));
     if (!ready.length) return { none: true, soonest: Math.min(...out.filter((u) => !skip.has(u.k.id + "|" + u.m)).map((u) => u.c), Infinity) - now };
-    const top = ORDER.indexOf(ready[0].k.provider), same = ready.filter((u) => ORDER.indexOf(u.k.provider) === top);
+    const same = ready.filter((u) => ready[0].e - u.e <= 3);              // các lựa chọn ngang chất lượng thì xoay vòng để chia tải
     return same[rr++ % same.length];
   }
   const usable = () => get("engine", "auto") !== "off" && keys().some((k) => k.status === "ok");
@@ -167,19 +185,22 @@ Chỉ trả về MỘT đối tượng JSON, không kèm giải thích, theo d�
 Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới cột phải ở phần đầu văn bản). Mỗi đoạn văn là MỘT block (không ngắt dòng cứng giữa đoạn). Bảng thì dùng block "table" đủ hàng, đủ cột.
 "role" là một trong: head_left (tên cơ quan ban hành / cơ quan chủ quản bên trái), head_right (Quốc hiệu, Tiêu ngữ bên phải), so (Số, ký hiệu), dia_danh (địa danh, ngày tháng), ten_loai (tên loại văn bản như QUYẾT ĐỊNH, THÔNG BÁO), trich_yeu (trích yếu nội dung), kinh_gui (dòng Kính gửi), body (nội dung), noi_nhan (từng dòng của mục Nơi nhận, kể cả chữ "Nơi nhận:"), chuc_vu (quyền hạn, chức vụ người ký), ho_ten (họ tên người ký), other (không thuộc loại nào, vd. tờ phiếu, biểu mẫu). Nếu văn bản không theo mẫu công văn thì dùng "body" hoặc "other" cho mọi thứ.`;
   const call = {
-    async gemini(u, b64, mime) {
-      const j = await jfetch(`https://generativelanguage.googleapis.com/v1beta/models/${u.m}:generateContent?key=${encodeURIComponent(u.k.key)}`, { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0, maxOutputTokens: 16000 } }) });
+    async gemini(u, b64, mime, o = {}) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${u.m}:generateContent?key=${encodeURIComponent(u.k.key)}`;
+      const body = (think) => JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0, maxOutputTokens: o.test ? 1500 : 16000, ...(think ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } });
+      const send = (think) => jfetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body(think), timeout: o.test ? 30000 : 120000 });
+      let j; try { j = await send(/flash/.test(u.m)); } catch (e) { if (e.status === 400 && /think/i.test(e.message)) j = await send(false); else throw e; }   // tắt "suy nghĩ" cho nhanh
       const t = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join(""); if (!t) throw new Error("Gemini không trả nội dung (" + (j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || "?") + ")"); return t;
     },
-    async openai(u, b64, mime, url) {
+    async openai(u, b64, mime, url, o = {}) {
       const j = await jfetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + u.k.key },
-        body: JSON.stringify({ model: u.m, temperature: 0, max_tokens: 8000, messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }] }) });
+        body: JSON.stringify({ model: u.m, temperature: 0, max_tokens: o.test ? 1500 : 8000, messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }] }), timeout: o.test ? 30000 : 120000 });
       const t = j.choices?.[0]?.message?.content; if (!t) throw new Error("Model không trả nội dung"); return t;
     },
-    async anthropic(u, b64, mime) {
+    async anthropic(u, b64, mime, o = {}) {
       const j = await jfetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": u.k.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({ model: u.m, max_tokens: 16000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: prompt }] }] }) });
+        body: JSON.stringify({ model: u.m, max_tokens: o.test ? 1500 : 16000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: prompt }] }] }), timeout: o.test ? 30000 : 120000 });
       return (j.content || []).filter((x) => x.type === "text").map((x) => x.text).join("");
     },
   };
@@ -200,12 +221,12 @@ Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới c�
         break;
       }
       try {
-        onStatus?.(`AI (${NAMES[u.k.provider]} · ${u.m}) đang đọc trang…`);
+        onStatus?.(`AI (${NAMES[u.k.provider]} · ${u.m}) đang đọc trang…`); var t1 = performance.now();
         const txt = u.k.provider === "gemini" ? await call.gemini(u, b64, "image/jpeg") : u.k.provider === "anthropic" ? await call.anthropic(u, b64, "image/jpeg")
           : await call.openai(u, b64, "image/jpeg", ({ groq: "https://api.groq.com/openai/v1/chat/completions", xai: "https://api.x.ai/v1/chat/completions" })[u.k.provider] || "https://openrouter.ai/api/v1/chat/completions");
-        const blocks = parse(txt); u.k.used = (u.k.used || 0) + 1; return { blocks, via: `${NAMES[u.k.provider]} · ${u.m}` };
+        const blocks = parse(txt); const sx = st(u.k.id + "|" + u.m); sx.ok++; sx.ms += performance.now() - t1; sx.fail = Math.max(0, sx.fail - 0.5); return { blocks, via: `${NAMES[u.k.provider]} · ${u.m}` };
       } catch (e) {
-        last = e; const id = u.k.id + "|" + u.m, st = e.status;
+        last = e; const id = u.k.id + "|" + u.m, st = e.status; st_(id);
         if (e.net) cool.set(id, Date.now() + 30e3); else if (st === 429 || (st >= 500 && st < 600) || /quota|rate|limit|overload|busy/i.test(e.message || "")) cool.set(id, Date.now() + (/day|daily|quota/i.test(e.message || "") && st === 429 ? 3600e3 : 45e3));
         else if (st === 401 || st === 403) { const arr = keys(), kk = arr.find((x) => x.id === u.k.id); if (kk) { kk.status = "bad"; kk.err = e.message; save(arr); } skip.add(id); }
         else if (st === 404) { skip.add(id); recheck(u.k.id); }
@@ -215,5 +236,5 @@ Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới c�
     throw last || new Error("Không có key AI nào dùng được lúc này");
   }
 
-  root.AIX = { read, addKey, recheck, removeKey, keys, usable, NAMES, FREE, mask, get, set, detect };
+  root.AIX = { onChange: (f) => { listeners.add(f); return () => listeners.delete(f); }, read, addKey, recheck, removeKey, keys, usable, NAMES, FREE, mask, get, set, detect };
 })(window);
