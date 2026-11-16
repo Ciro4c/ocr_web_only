@@ -14,8 +14,8 @@ const DB = {
   db: null,
   open() {
     return new Promise((res, rej) => {
-      const rq = indexedDB.open("ocr_nd30", 1);
-      rq.onupgradeneeded = () => rq.result.createObjectStore("docs", { keyPath: "id" });
+      const rq = indexedDB.open("ocr_nd30", 2);
+      rq.onupgradeneeded = () => { const d = rq.result; if (!d.objectStoreNames.contains("docs")) d.createObjectStore("docs", { keyPath: "id" }); if (!d.objectStoreNames.contains("drafts")) d.createObjectStore("drafts", { keyPath: "id" }); };
       rq.onsuccess = () => { DB.db = rq.result; res(); };
       rq.onerror = () => rej(rq.error);
     });
@@ -25,6 +25,10 @@ const DB = {
   get(id) { return DB.tx("readonly", (s) => s.get(id)); },
   put(d) { return DB.tx("readwrite", (s) => s.put(d)); },
   del(id) { return DB.tx("readwrite", (s) => s.delete(id)); },
+  dtx(mode, fn) { return new Promise((res, rej) => { const t = DB.db.transaction("drafts", mode); const r = fn(t.objectStore("drafts")); t.oncomplete = () => res(r.result); t.onerror = () => rej(t.error); }); },
+  draftGet() { return DB.dtx("readonly", (s) => s.get("cur")); },
+  draftPut(d) { return DB.dtx("readwrite", (s) => s.put({ ...d, id: "cur" })); },
+  draftDel() { return DB.dtx("readwrite", (s) => s.delete("cur")); },
 };
 
 /* ---------------- OCR ---------------- */
@@ -294,7 +298,43 @@ function modelFromBlocks(blocks) {
   return m;
 }
 
+/* tự nhận hướng chữ: thử 0/180 (hoặc 90/270 nếu chữ nằm dọc) trên ảnh thu nhỏ, chọn hướng đọc được nhiều chữ chắc chắn nhất */
+async function autoOrient(p, onStatus) {
+  if (p.oriented || PREP.orient === false) return p;
+  const src = p.canvas, k = Math.min(1, 1100 / Math.max(src.width, src.height)), sw = Math.round(src.width * k), sh = Math.round(src.height * k);
+  const mk = (deg, full) => { const kk = full ? 1 : k, a = Math.round(src.width * kk), b = Math.round(src.height * kk), sw2 = deg % 180 ? b : a, sh2 = deg % 180 ? a : b;
+    const c = document.createElement("canvas"); c.width = sw2; c.height = sh2; const g = c.getContext("2d", { willReadFrequently: true }); g.fillStyle = "#fff"; g.fillRect(0, 0, sw2, sh2);
+    g.translate(sw2 / 2, sh2 / 2); g.rotate((deg * Math.PI) / 180); g.drawImage(src, -a / 2, -b / 2, a, b); return c; };
+  const t0 = mk(0), d = t0.getContext("2d").getImageData(0, 0, t0.width, t0.height).data, W = t0.width, H = t0.height;
+  const rows = new Float64Array(H), cols = new Float64Array(W); let tot = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4, v = 255 - (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114); const dk = v > 90 ? 1 : 0; rows[y] += dk; cols[x] += dk; tot += dk; }
+  const cv = (a) => { const m = a.reduce((s, x) => s + x, 0) / a.length || 1; return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / a.length) / m; };
+  if (tot < 200) return p;
+  const vertical = cv(cols) > cv(rows) * 1.25;
+  const w = await acquire(onStatus);
+  const score = async (deg) => { const c = deg ? mk(deg) : t0; const { data } = await w.recognize(c, {}, { blocks: true });
+    const ws = data.words || (data.blocks || []).flatMap((b) => b.paragraphs.flatMap((pp) => pp.lines.flatMap((l) => l.words)));
+    return ws.reduce((s, x) => s + (x.confidence >= 60 && x.text.replace(/[^\p{L}\p{N}]/gu, "").length >= 2 ? x.text.length : 0), 0); };
+  let best = 0;
+  try {
+    onStatus?.("Đang nhận hướng chữ…");
+    const c = vertical ? [90, 270] : [0, 180], res = {};
+    res[c[0]] = await score(c[0]);
+    if (res[c[0]] < 400) res[c[1]] = await score(c[1]);
+    if (Math.max(...Object.values(res)) < 80) { for (const o of (vertical ? [0, 180] : [90, 270])) res[o] = await score(o); }
+    const top = Object.entries(res).sort((a, b) => b[1] - a[1]); best = +top[0][0];
+    if (top[0][1] < 60) best = 0; else if (res[0] != null && best !== 0 && top[0][1] < res[0] * 1.3) best = 0;
+  } finally { release(w); }
+  if (!best) return { ...p, oriented: true, rotated: 0 };
+  return { ...p, canvas: mk(best, true), oriented: true, rotated: best };
+}
+const scanOf = (c) => { const k = Math.min(1, 1700 / c.width), t = document.createElement("canvas"); t.width = Math.round(c.width * k); t.height = Math.round(c.height * k);
+  t.getContext("2d").drawImage(c, 0, 0, t.width, t.height); return { data: t.toDataURL("image/jpeg", 0.82), w: t.width, h: t.height }; };
 async function ocrPage(p, onStatus) {
+  p = await autoOrient(p, onStatus);
+  const r = await ocrPage0(p, onStatus); r.rotated = p.rotated || 0; if (p.keepScan) r.scan = scanOf(p.canvas); return r;
+}
+async function ocrPage0(p, onStatus) {
   let aiFail = null;
   if (AIX.usable()) {
     try {
@@ -324,7 +364,7 @@ async function ocrPageTess(p, onStatus) {
 }
 
 /* ghép kết quả các trang thành một văn bản */
-function assemble(name, results, format) {
+function assemble(name, results, format, keepScans) {
   let model = null; const warnings = []; const plain = [];
   results.forEach((r, i) => {
     if (r.lowRes && !r.ai) warnings.push(`Trang ${i + 1}: ảnh gốc chỉ rộng ${r.srcW}px, quá nhỏ để OCR chính xác. Hãy dùng ảnh gốc từ điện thoại/máy scan (từ ~1700px).`);
@@ -344,7 +384,7 @@ function assemble(name, results, format) {
   const unc = model.body.reduce((n, p) => n + p.runs.filter((r) => r.u).length, 0);
   return { id: new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14) + "_" + Math.random().toString(36).slice(2, 6),
     name, date: new Date().toLocaleString("vi-VN"), status: "chua_kiem", format: format || getFormat(), plain, pages: results.length, thumbs: results.slice(0, 6).map((r) => r.thumb), model, uncertain: unc,
-    conf: results.reduce((a, r) => a + r.mean, 0) / results.length };
+    conf: results.reduce((a, r) => a + r.mean, 0) / results.length, scans: keepScans ? results.map((r) => r.scan).filter(Boolean) : undefined };
 }
 
 async function convertFile(file, opts, onStatus) {
@@ -387,7 +427,7 @@ async function exportZip(docs) {
 }
 
 /* ---------------- giao diện ---------------- */
-const app = { view: "convert", openId: null, busy: false, lastBatch: [], cancel: false, cam: { pages: [], results: [], doc: null } };
+const app = { view: "convert", openId: null, busy: false, lastBatch: [], cancel: false, };
 function setView(v, id = null) { if (app.view === "camera" && v !== "camera") stopCamera(); app.view = v; app.openId = id; render(); }
 
 function header() {
@@ -483,77 +523,6 @@ async function filesFromDrop(dt) {
 }
 
 /* ---------------- Chụp & OCR ---------------- */
-let camStream = null;
-function stopCamera() { camStream?.getTracks().forEach((t) => t.stop()); camStream = null; }
-
-function viewCamera() {
-  const C = app.cam;
-  const video = el("video", { autoplay: true, playsinline: true, muted: true, class: "cam" });
-  const msg = el("div", { class: "muted" }), shots = el("div", { class: "shots" }), result = el("div", { class: "result" });
-  const fileCap = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: true });
-  let facing = "environment";
-  const showShots = () => {
-    shots.replaceChildren(...C.results.map((r, i) => el("div", { class: "shot" }, el("img", { src: r.thumb, alt: "trang " + (i + 1) }),
-      el("small", {}, `Trang ${i + 1} · tin cậy ${r.mean.toFixed(0)}%`),
-      r.mean < 65 || r.words.length < 10 ? el("small", { class: "bad" }, "Ảnh mờ/thiếu chữ: nên chụp lại") : "",
-      el("button", { onclick: () => { C.results.splice(i, 1); showShots(); updCounter(); } }, "Xóa"))));
-    finish.disabled = !C.results.length;
-  };
-  const start = async () => {
-    stopCamera();
-    if (!navigator.mediaDevices?.getUserMedia) { msg.textContent = "Trình duyệt/địa chỉ này không cho dùng camera trực tiếp (cần https). Dùng nút “Chụp bằng ứng dụng máy ảnh”."; return; }
-    try {
-      camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
-      video.srcObject = camStream; toggleCam.textContent = "⏻ Tắt camera"; camwrap.classList.remove("off"); msg.textContent = "Đặt tờ giấy vào khung, đủ sáng, cầm chắc tay rồi bấm Chụp.";
-    } catch (e) { msg.textContent = "Không mở được camera: " + (e.message || e) + ". Hãy cho phép quyền camera hoặc dùng nút “Chụp bằng ứng dụng máy ảnh”."; }
-  };
-  const process = async (canvasOrBitmap) => {
-    msg.textContent = "Đang nhận dạng…";
-    try {
-      const p = prepare(canvasOrBitmap, 0);
-      const r = await ocrPage(p, (s) => (msg.textContent = s));
-      C.results.push(r); C.doc = null; showShots();
-      msg.textContent = r.mean < 65 ? "Đọc chưa rõ, nên chụp lại (đủ sáng, gần hơn, không rung)." : `Đã đọc trang ${C.results.length}. Chụp tiếp trang sau hoặc bấm “Hoàn tất”.`;
-      preview.textContent = r.text.trim().slice(0, 1200);
-    } catch (e) { console.error(e); msg.textContent = "Lỗi OCR: " + (e.message || e); }
-  };
-  const still = el("img", { class: "still", hidden: true, alt: "ảnh vừa chụp" }), badge = el("div", { class: "badge" }), counter = el("div", { class: "counter" });
-  const updCounter = () => { counter.textContent = C.pages.length || C.results.length ? `📄 Đã chụp ${C.results.length} trang` : ""; };
-  let flashT = null;
-  const snap = () => {
-    if (!camStream || !video.videoWidth) { msg.textContent = "Camera đang tắt hoặc chưa sẵn sàng."; return; }
-    const c = document.createElement("canvas"); c.width = video.videoWidth; c.height = video.videoHeight; c.getContext("2d").drawImage(video, 0, 0);
-    still.src = c.toDataURL("image/jpeg", 0.6); still.hidden = false; badge.textContent = `✅ ĐÃ CHỤP trang ${C.results.length + 1} — đang đọc chữ…`; badge.hidden = false;
-    camwrap.classList.add("flash"); setTimeout(() => camwrap.classList.remove("flash"), 250);
-    clearTimeout(flashT);
-    process(c).then(() => { badge.textContent = `✅ Đã chụp & đọc xong trang ${C.results.length}`; flashT = setTimeout(() => { still.hidden = true; badge.hidden = true; }, 2200); updCounter(); });
-  };
-  const toggleCam = el("button", { onclick: async () => { if (camStream) { stopCamera(); video.srcObject = null; toggleCam.textContent = "📷 Bật camera"; msg.textContent = "Camera đã tắt."; camwrap.classList.add("off"); } else { camwrap.classList.remove("off"); await start(); } } }, "⏻ Tắt camera");
-  const preview = el("pre", { class: "preview" }); const fmtSel = fmtSelect();
-  const camwrap = el("div", { class: "camwrap" }, video, el("div", { class: "frame" }), still, badge, counter, el("div", { class: "offmsg" }, "Camera đang tắt"));
-  const finish = el("button", { class: "primary", disabled: !C.results.length, onclick: async () => {
-    const d = assemble("chup_" + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, ""), C.results, fmtSel.value);
-    stopCamera(); video.srcObject = null; toggleCam.textContent = "📷 Bật camera"; camwrap.classList.add("off");
-    await DB.put(d); C.doc = d; showDone();
-  } }, "✅ Hoàn tất → Word");
-  const showDone = () => {
-    const d = C.doc; if (!d) return result.replaceChildren();
-    result.replaceChildren(el("div", { class: "ok" }, `Đã lưu vào Thư viện (${d.pages} trang). ${d.model.warnings.length ? "⚠ " + d.model.warnings.length + " cảnh báo, hãy xem khi mở." : ""}`),
-      el("div", { class: "row" }, el("button", { class: "primary", onclick: async () => download(await docxBlob(d), stem(d.name) + sfx(d) + ".docx") }, "⬇ Tải Word"),
-        el("button", { onclick: () => setView("edit", d.id) }, "Xem / sửa"),
-        el("button", { onclick: () => { C.results = []; C.doc = null; preview.textContent = ""; showShots(); showDone(); } }, "📷 Chụp văn bản mới")));
-  };
-  fileCap.addEventListener("change", async () => { for (const f of fileCap.files) { const b = await bitmapOf(f); await process(b); b.close?.(); } fileCap.value = ""; });
-  setTimeout(() => { showShots(); showDone(); updCounter(); start(); }, 0);
-  return el("main", {}, el("h2", {}, "Chụp & OCR ra liền"),
-    camwrap,
-    el("div", { class: "row" }, el("button", { class: "primary big", onclick: snap }, "📸 Chụp"), toggleCam,
-      el("button", { onclick: () => { facing = facing === "environment" ? "user" : "environment"; start(); } }, "🔄 Đổi camera"),
-      el("button", { onclick: () => fileCap.click() }, "Chụp bằng ứng dụng máy ảnh"), fileCap, el("label", {}, "Bộ đọc: ", engineSelect()), el("label", {}, "Kiểu Word: ", fmtSel), finish),
-    msg, shots, preview, result,
-    el("p", { class: "muted" }, "Mẹo: đặt giấy trên nền tối, đủ sáng, chụp thẳng góc, giữ cả tờ trong khung. Chụp nhiều trang rồi “Hoàn tất” để gộp thành một file Word."));
-}
-
 function viewSettings() {
   const msg = el("div", { class: "muted" }), list = el("div", { class: "list" });
   const key = el("input", { type: "password", placeholder: "Dán API key (Gemini AIza…, Groq gsk_…, xAI Grok xai-…, OpenRouter sk-or-…, Anthropic sk-ant-…)", autocomplete: "off", style: "flex:1 1 20rem" });
@@ -636,14 +605,16 @@ async function viewEdit() {
   const fmtSel = el("select", { onchange: async () => { d.format = fmtSel.value; await DB.put(d); render(); } },
     el("option", { value: "plain" }, "Word văn bản trơn"), el("option", { value: "nd30" }, "Word thể thức Nghị định 30")); fmtSel.value = fmtOf(d);
   const body = (fmtOf(d) === "nd30" ? m.body : d.plain).map((p, k) => p.table ? field(`Bảng (mỗi dòng một hàng, các ô cách bằng “ | ”)`, () => p.table.map((r) => r.join(" | ")).join("\n"), (v) => { p.table = v.split("\n").filter(Boolean).map((r) => r.split("|").map((c) => c.trim())); }, true) : field(`Đoạn ${k + 1}${p.runs.some((r) => r.u) ? " (có chữ nghi sai)" : ""}`, () => plain(p.runs), (v) => { p.runs = [{ t: v, u: false }]; }, true));
-  const imgs = d.thumbs.map((t) => el("img", { src: t, alt: "trang" }));
+  const imgs = (d.scans?.length ? d.scans.map((x) => x.data) : d.thumbs).map((t) => el("img", { src: t, alt: "trang" }));
   const msg = el("span", { class: "muted" });
   const save = async () => { await DB.put(d); msg.textContent = "Đã lưu."; };
+  const nameIn = el("input", { type: "text", value: d.name, oninput: () => { d.name = nameIn.value.trim() || d.name; } });
+  const shareMsg = el("div", { class: "muted" });
   return el("main", { class: "edit" },
     el("div", { class: "row" }, el("button", { onclick: () => setView("library") }, "← Thư viện"), el("h2", {}, `${m.ten_loai || "Văn bản"} ${m.so}`)),
     warn,
     el("div", { class: "cols" }, el("div", { class: "pics" }, el("b", {}, "Ảnh đã xử lý"), ...imgs),
-      el("div", { class: "form" }, el("label", { class: "f" }, el("span", {}, "Kiểu file Word xuất ra"), fmtSel),
+      el("div", { class: "form" }, el("label", { class: "f" }, el("span", {}, "Tên tài liệu (dùng làm tên file)"), nameIn), el("label", { class: "f" }, el("span", {}, "Kiểu file Word xuất ra"), fmtSel),
         ...(fmtOf(d) === "plain" ? body : [field("Cơ quan ban hành (mỗi dòng một dòng)", () => m.head.left.map((x) => x.t).join("\n"), (v) => { m.head.left = v.split("\n").filter(Boolean).map((t) => ({ t, runs: [{ t, u: false }] })); }, true),
         field("Số, ký hiệu", () => m.so, (v) => (m.so = v)), field("Địa danh, ngày tháng", () => m.dia_danh, (v) => (m.dia_danh = v)),
         field("Tên loại văn bản", () => m.ten_loai, (v) => (m.ten_loai = v)), field("Trích yếu", () => m.trich_yeu.map((x) => x.t).join(" "), (v) => { m.trich_yeu = v ? [{ t: v, runs: [{ t: v, u: false }] }] : []; }, true),
@@ -655,7 +626,7 @@ async function viewEdit() {
         el("div", { class: "row" },
           el("button", { class: "primary", onclick: async () => { await save(); download(await docxBlob(d), stem(d.name) + sfx(d) + ".docx"); } }, "💾 Lưu và tải Word"),
           el("button", { onclick: async () => { d.status = d.status === "da_kiem" ? "chua_kiem" : "da_kiem"; await save(); render(); } }, d.status === "da_kiem" ? "↩ Bỏ đánh dấu đã kiểm" : "✅ Đánh dấu đã kiểm"),
-          el("button", { onclick: save }, "Lưu"), el("button", { onclick: async () => { if (confirm("Xóa văn bản này?")) { await DB.del(d.id); setView("library"); } } }, "🗑 Xóa"), msg))));
+          el("button", { onclick: save }, "Lưu"), el("button", { onclick: async () => { if (confirm("Xóa văn bản này?")) { await DB.del(d.id); setView("library"); } } }, "🗑 Xóa"), msg), el("h3", {}, "Tải / gửi"), shareRow(d, shareMsg), shareMsg)));
 }
 
 async function render(keep) {
@@ -671,4 +642,4 @@ window.addEventListener("DOMContentLoaded", async () => {
   try { await DB.open(); } catch (e) { $("#app").textContent = "Trình duyệt không cho lưu dữ liệu (IndexedDB). Hãy tắt chế độ ẩn danh."; return; }
   render();
 });
-window.__ocr = { PREP, convertFile, ocrPage, prepare, assemble, DB, docxBlob, exportZip, summaryCsv };
+window.__ocr = { autoOrient, PREP, convertFile, ocrPage, prepare, assemble, DB, docxBlob, exportZip, summaryCsv };

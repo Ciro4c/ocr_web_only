@@ -21,3 +21,6 @@ Mở `index.html` qua một máy chủ tĩnh (không mở trực tiếp bằng `
 
 ## Bộ đọc AI (tự động khi có key)
 Tab "⚙ AI": nhập một hoặc nhiều key (Gemini, Groq, OpenRouter — có gói miễn phí; Anthropic — tính phí). Ứng dụng kiểm tra key thật, tự chọn model phù hợp, hết hạn mức thì tự chuyển key/model khác. Không có key hoặc AI lỗi thì dùng Tesseract trong máy. Key chỉ lưu trong trình duyệt; ảnh được gửi tới nhà cung cấp của key.
+
+## Scan bằng camera
+Tab "Chụp & OCR": đo độ nét/rung theo thời gian thực, tự chụp khi giữ yên và nét (chụp loạt 3 khung lấy khung nét nhất), đèn/zoom/chạm lấy nét nếu máy hỗ trợ. Tự nhận hướng chữ (chụp ngược/ngang vẫn đọc được). Phiên nhiều trang: đặt tên, sắp xếp, xoay, chụp lại, xóa; tự lưu nháp. Xuất Word hoặc PDF (ảnh scan đã nắn phẳng), gửi qua bảng chia sẻ của điện thoại hoặc soạn email.
