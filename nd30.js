@@ -9,6 +9,49 @@
     "HỢP ĐỒNG", "GIẤY GIỚI THIỆU", "GIẤY ĐI ĐƯỜNG", "THƯ CÔNG", "THÔNG CÁO", "KẾT LUẬN", "NGHỊ ĐỊNH"].map(strip);
   const CONF_LOW = 72;
 
+  /* kiểm tra âm tiết tiếng Việt: chữ có dấu nhưng không ghép được thành âm tiết hợp lệ thì nghi OCR sai (tô vàng) */
+  const VN_DIA = /[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]/i;
+  const NUC = "iêu|yêu|uyê|uôi|ươi|ươu|uây|oai|oay|oao|oeo|uya|uyu|ai|ao|au|ay|âu|ây|eo|êu|ia|iê|iu|oa|oă|oe|oi|ôi|ơi|ua|uâ|uê|uô|ui|ưa|ưi|ươ|ưu|uy|yê|a|ă|â|e|ê|i|o|ô|ơ|u|ư|y";
+  const SYL = new RegExp("^(ngh|gh|nh|ng|ch|th|tr|ph|kh|gi|qu|[bcdđghklmnpqrstvx])?(" + NUC + ")(ch|ng|nh|c|m|n|p|t)?$");
+  const noTone = (s) => s.normalize("NFD").replace(/[\u0300\u0301\u0303\u0309\u0323]/g, "").normalize("NFC");
+  function suspect(w) {
+    const t = String(w).replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    if (t.length < 2 || !/^\p{L}+$/u.test(t) || !VN_DIA.test(t)) return false;
+    return !SYL.test(noTone(t.toLowerCase()));
+  }
+
+  /* tìm vùng con dấu đỏ / chữ ký số xanh trong ảnh (d = dữ liệu RGBA đã thu nhỏ) */
+  function sealBoxes(d, w, h) {
+    const G = 8, gw = Math.ceil(w / G), gh = Math.ceil(h / G), cnt = new Uint16Array(gw * gh);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4, r = d[i], g = d[i + 1], b = d[i + 2];
+      if ((r > 130 && r - g > 50 && r - b > 50) || (b > 110 && b - r > 50 && b - g > 25)) cnt[((y / G) | 0) * gw + ((x / G) | 0)]++;
+    }
+    const seen = new Uint8Array(gw * gh), out = [], hot = (i) => cnt[i] >= 3;
+    for (let s = 0; s < gw * gh; s++) {
+      if (seen[s] || !hot(s)) continue;
+      const q = [s]; seen[s] = 1; let x0 = gw, y0 = gh, x1 = -1, y1 = -1, n = 0;
+      while (q.length) {
+        const i = q.pop(), cx = i % gw, cy = (i / gw) | 0; n += cnt[i];
+        x0 = Math.min(x0, cx); x1 = Math.max(x1, cx); y0 = Math.min(y0, cy); y1 = Math.max(y1, cy);
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const nx = cx + dx, ny = cy + dy; if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+          const j = ny * gw + nx; if (!seen[j] && hot(j)) { seen[j] = 1; q.push(j); }
+        }
+      }
+      const bw = (x1 - x0 + 1) * G, bh = (y1 - y0 + 1) * G;
+      if (n >= 50 && bw >= 0.07 * w && bh >= 0.035 * h && bw <= 0.6 * w && bh <= 0.4 * h && y0 * G > 0.2 * h)
+        out.push({ n, x0: Math.max(0, x0 * G - G), y0: Math.max(0, y0 * G - G), x1: Math.min(w, (x1 + 1) * G + G), y1: Math.min(h, (y1 + 1) * G + G) });
+    }
+    return out.sort((a, b) => b.n - a.n).slice(0, 2);
+  }
+  function sealParas(D, seals, align) {
+    const list = (seals || []).slice(0, 3); if (!list.length) return [];
+    const { Paragraph, ImageRun, AlignmentType } = D;
+    return [new Paragraph({ alignment: align || AlignmentType.RIGHT, spacing: { before: 200 }, children: list.map((s) => {
+      const w = Math.min(s.w, 130); return new ImageRun({ data: s.data, transformation: { width: w, height: Math.round(s.h * w / s.w) } }); }) })];
+  }
+
   /* ---------- gom từ -> dòng ---------- */
   function fromTessLines(tl) {
     const lines = [];
@@ -58,7 +101,7 @@
   const runsOf = (ws) => {
     const runs = [];
     for (const w of ws) {
-      const u = w.conf < CONF_LOW;
+      const u = w.conf < CONF_LOW || suspect(w.text);
       if (runs.length && runs[runs.length - 1].u === u) runs[runs.length - 1].t += " " + w.text;
       else { if (runs.length) runs[runs.length - 1].t += " "; runs.push({ t: w.text, u }); }
     }
@@ -72,6 +115,14 @@
     const m = { warnings: [], head: { left: [], right: [] }, so: "", dia_danh: "", loai: "", ten_loai: "", trich_yeu: [], vv: "",
       kinh_gui: "", body: [], noi_nhan: [], chuc_vu: [], ho_ten: "", quyen: "" };
     if (!lines.length) { m.warnings.push("Không đọc được chữ nào trong ảnh."); return m; }
+    const lineTxt = (l) => strip(l.words.map((w) => w.text).join(" "));
+    const hasQH = lines.slice(0, 12).some((l) => /CONG HOA XA HOI|CHU NGHIA VIET NAM|DOC LAP.*TU DO|TU DO.*HANH PHUC/.test(lineTxt(l)));
+    const hasNN = lines.some((l) => /^NOI NHAN/.test(lineTxt(l)));
+    if (!hasQH && !hasNN) {
+      m.informal = true;
+      m.body = plainParse(words, W, H, tessLines).map((p) => ({ runs: p.runs, table: p.table, align: p.center ? "center" : p.right ? "right" : undefined, bold: p.bold, italic: p.italic }));
+      return m;
+    }
 
     const allSpans = lines.map((l) => ({ line: l, sp: spans(l, Math.max(2.2 * medH, 0.04 * W)) }));
     const left0 = Math.min(...lines.map((l) => l.words[0].x0));
@@ -84,7 +135,6 @@
     for (let k = 0; k < Math.min(headLimit, 10); k++) {
       if (/CONG HOA XA HOI|CHU NGHIA VIET NAM/.test(strip(lines[k].words.map((w) => w.text).join(" ")))) { qh = k; break; }
     }
-    if (qh < 0) m.warnings.push("Không tìm thấy Quốc hiệu. Nếu đây không phải công văn theo NĐ 30, kết quả có thể chưa phù hợp.");
     let bodyStart = 0, headerBottom = 0;
     for (let k = 0; k < headLimit; k++) {
       const spl = allSpans[k].sp;
@@ -194,7 +244,7 @@
         m.chuc_vu = sig.slice(0, -1).map((x) => x.t);
       }
     } else {
-      m.warnings.push("Không tìm thấy mục \"Nơi nhận\".");
+      if (qh >= 0) m.warnings.push("Không tìm thấy mục \"Nơi nhận\".");
     }
     m.noi_nhan = m.noi_nhan.filter((t) => !/^N[oơ]i nhận\s*:?\s*$/i.test(t));
     const unc = m.body.reduce((n, p) => n + p.runs.filter((r) => r.u).length, 0);
@@ -204,7 +254,7 @@
   }
 
   /* ---------- dựng .docx ---------- */
-  function build(model, D) {
+  function build(model, D, seals) {
     const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle, Header,
       PageNumber, TableLayoutType, VerticalAlign, LineRuleType } = D;
     const FONT = "Times New Roman", MM = 56.7;
@@ -220,44 +270,59 @@
     const lineRule = (len) => new Paragraph({ children: [], alignment: AlignmentType.CENTER, spacing: { before: 0, after: 0 },
       border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: "000000", space: 1 } }, indent: { left: mm(len), right: mm(len) } });
 
-    /* đầu văn bản: bảng 2 cột */
-    const leftKids = [], rightKids = [];
-    const leftTexts = model.head.left.map((x) => x.t);
-    leftTexts.forEach((t, k) => leftKids.push(centerP(t, { size: 13, bold: k === leftTexts.length - 1 || k > 0, caps: k === 0 })));
-    if (leftTexts.length) leftKids.push(lineRule(18));
-    if (model.so) leftKids.push(centerP(model.so, { size: 13, before: 60 }));
-    if (model.vv) leftKids.push(centerP(model.vv, { size: 12, before: 60 }));
-    rightKids.push(centerP("CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", { size: 13, bold: true }));
-    rightKids.push(centerP("Độc lập - Tự do - Hạnh phúc", { size: 14, bold: true }));
-    rightKids.push(lineRule(22));
-    if (model.dia_danh) rightKids.push(P([run(model.dia_danh, { size: 14, italics: true })], { align: AlignmentType.CENTER, before: 120 }));
+    /* đầu văn bản: chỉ dựng khi đúng là văn bản hành chính có Quốc hiệu; văn bản khác chỉ áp lề, font, số trang */
+    const formal = model.head.right.length > 0 || (model.head.left.length > 0 && !!(model.so || model.dia_danh));
     const cell = (kids, w) => new TableCell({ children: kids, width: { size: w, type: WidthType.DXA }, borders: noBorders, verticalAlign: VerticalAlign.TOP });
     const total = mm(210 - 30 - 15);
-    const children = [new Table({ rows: [new TableRow({ children: [cell(leftKids, Math.round(total * 0.36)), cell(rightKids, Math.round(total * 0.64))] })],
-      width: { size: total, type: WidthType.DXA }, columnWidths: [Math.round(total * 0.36), Math.round(total * 0.64)], layout: TableLayoutType.FIXED,
-      borders: { ...noBorders, insideHorizontal: noBorder, insideVertical: noBorder } })];
+    const children = [];
+    if (formal) {
+      const leftKids = [], rightKids = [];
+      const leftTexts = model.head.left.map((x) => x.t);
+      leftTexts.forEach((t, k) => leftKids.push(centerP(t, { size: 13, bold: k === leftTexts.length - 1 || k > 0, caps: k === 0 })));
+      if (leftTexts.length) leftKids.push(lineRule(18));
+      if (model.so) leftKids.push(centerP(model.so, { size: 13, before: 60 }));
+      if (model.vv) leftKids.push(centerP(model.vv, { size: 12, before: 60 }));
+      rightKids.push(centerP("CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", { size: 13, bold: true }));
+      rightKids.push(centerP("Độc lập - Tự do - Hạnh phúc", { size: 14, bold: true }));
+      rightKids.push(lineRule(22));
+      if (model.dia_danh) rightKids.push(P([run(model.dia_danh, { size: 14, italics: true })], { align: AlignmentType.CENTER, before: 120 }));
+      children.push(new Table({ rows: [new TableRow({ children: [cell(leftKids, Math.round(total * 0.36)), cell(rightKids, Math.round(total * 0.64))] })],
+        width: { size: total, type: WidthType.DXA }, columnWidths: [Math.round(total * 0.36), Math.round(total * 0.64)], layout: TableLayoutType.FIXED,
+        borders: { ...noBorders, insideHorizontal: noBorder, insideVertical: noBorder } }));
+    }
 
     /* tên loại, trích yếu */
     if (model.ten_loai) {
-      children.push(centerP(model.ten_loai.toUpperCase(), { size: 14, bold: true, before: 240 }));
+      children.push(centerP(model.ten_loai.toUpperCase(), { size: 14, bold: true, before: formal ? 240 : 0 }));
       const ty = model.trich_yeu.map((x) => x.t).join(" ").trim();
       if (ty) { children.push(centerP(ty, { size: 14, bold: true })); children.push(lineRule(25)); }
     }
     if (model.kinh_gui) children.push(P([run(model.kinh_gui, { size: 14 })], { align: AlignmentType.CENTER, before: 200, after: 80 }));
     /* nội dung */
+    const tbl = (rows) => {
+      const cols = Math.max(1, ...rows.map((r) => r.length)), cw = Math.floor(total / cols), bd = { style: BorderStyle.SINGLE, size: 4, color: "000000" };
+      return new Table({ width: { size: total, type: WidthType.DXA }, columnWidths: Array(cols).fill(cw), layout: TableLayoutType.FIXED,
+        borders: { top: bd, bottom: bd, left: bd, right: bd, insideHorizontal: bd, insideVertical: bd },
+        rows: rows.map((r) => new TableRow({ children: Array.from({ length: cols }, (_, c) => new TableCell({ width: { size: cw, type: WidthType.DXA }, children: [P([run(r[c] || "", { size: 13 })], { before: 20, after: 20 })] })) })) });
+    };
     model.body.forEach((p) => {
-      children.push(P(runsFrom(p.runs, { size: 14, bold: p.bold, italics: p.italic }), { align: AlignmentType.JUSTIFIED, indent: true, before: 120, line: 276 }));
+      if (p.table) { children.push(tbl(p.table), new Paragraph({ children: [] })); return; }
+      const len = (p.runs || []).reduce((n, r) => n + r.t.length, 0);
+      const al = p.align === "center" ? AlignmentType.CENTER : p.align === "right" ? AlignmentType.RIGHT : AlignmentType.JUSTIFIED;
+      children.push(P(runsFrom(p.runs, { size: 14, bold: p.bold, italics: p.italic }), { align: al, indent: !p.align && !p.heading && len >= 60, before: 120, line: 276 }));
     });
-    /* nơi nhận + chữ ký */
-    const nnKids = [P([run("Nơi nhận:", { size: 12, bold: true, italics: true })], { keepNext: true })];
-    model.noi_nhan.forEach((t) => nnKids.push(P([run(t, { size: 11 })], { keepNext: true })));
-    const sgKids = model.chuc_vu.map((t, k) => centerP(t, { size: 14, bold: true, keepNext: true }));
-    sgKids.push(P([run("", { size: 14 })], { after: 1200 }));
-    if (model.ho_ten) sgKids.push(centerP(model.ho_ten, { size: 14, bold: true }));
-    children.push(new Paragraph({ children: [], spacing: { before: 120, after: 0 }, keepNext: true }));
-    children.push(new Table({ rows: [new TableRow({ cantSplit: true, children: [cell(nnKids, Math.round(total * 0.5)), cell(sgKids, Math.round(total * 0.5))] })],
-      width: { size: total, type: WidthType.DXA }, columnWidths: [Math.round(total * 0.5), Math.round(total * 0.5)], layout: TableLayoutType.FIXED,
-      borders: { ...noBorders, insideHorizontal: noBorder, insideVertical: noBorder } }));
+    /* nơi nhận + chữ ký (chỉ khi văn bản có) và con dấu/chữ ký cắt từ bản scan */
+    if (model.noi_nhan.length || model.chuc_vu.length || model.ho_ten) {
+      const nnKids = [P([run("Nơi nhận:", { size: 12, bold: true, italics: true })], { keepNext: true })];
+      model.noi_nhan.forEach((t) => nnKids.push(P([run(t, { size: 11 })], { keepNext: true })));
+      const sgKids = model.chuc_vu.map((t) => centerP(t, { size: 14, bold: true, keepNext: true }));
+      if (seals && seals.length) sgKids.push(...sealParas(D, seals, AlignmentType.CENTER)); else sgKids.push(P([run("", { size: 14 })], { after: 1200 }));
+      if (model.ho_ten) sgKids.push(centerP(model.ho_ten, { size: 14, bold: true }));
+      children.push(new Paragraph({ children: [], spacing: { before: 120, after: 0 }, keepNext: true }));
+      children.push(new Table({ rows: [new TableRow({ cantSplit: true, children: [cell(nnKids, Math.round(total * 0.5)), cell(sgKids, Math.round(total * 0.5))] })],
+        width: { size: total, type: WidthType.DXA }, columnWidths: [Math.round(total * 0.5), Math.round(total * 0.5)], layout: TableLayoutType.FIXED,
+        borders: { ...noBorders, insideHorizontal: noBorder, insideVertical: noBorder } }));
+    } else children.push(...sealParas(D, seals));
 
     return new Document({
       creator: "OCR văn bản (web)", title: model.ten_loai || "Văn bản",
@@ -307,16 +372,16 @@
         (prev && prev.right < right - 0.12 * W && endS);
       if (nl) { cur = { runs: runsOf(l.words), center }; paras.push(cur); }
       else { cur.runs[cur.runs.length - 1].t += " "; runsOf(l.words).forEach((r) => cur.runs.push(r)); }
-      prev = { t, right: x1 };
+      prev = { t, right: x1, cy: l.cy };
     }
     for (const p of paras) { const o = []; for (const r of p.runs) { if (o.length && o[o.length - 1].u === r.u) o[o.length - 1].t += r.t; else o.push({ ...r }); } p.runs = o; }
     return paras;
   }
-  function plainBuild(paras, D) {
+  function plainBuild(paras, D, seals) {
     const { Document, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } = D;
     const mm = (x) => Math.round(x * 56.7);
     return new Document({ sections: [{ properties: { page: { size: { width: mm(210), height: mm(297) }, margin: { top: mm(20), bottom: mm(20), left: mm(25), right: mm(20) } } },
-      children: (paras.length ? paras : [{ runs: [{ t: "" }] }]).flatMap((p) => {
+      children: [...(paras.length ? paras : [{ runs: [{ t: "" }] }]).flatMap((p) => {
         if (p.table) {
           const cols = Math.max(1, ...p.table.map((r) => r.length)), bd = { style: BorderStyle.SINGLE, size: 4, color: "000000" };
           return [new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: bd, bottom: bd, left: bd, right: bd, insideHorizontal: bd, insideVertical: bd },
@@ -326,7 +391,7 @@
         }
         return [new Paragraph({ alignment: p.center ? AlignmentType.CENTER : p.right ? AlignmentType.RIGHT : AlignmentType.LEFT, spacing: { after: 100 },
           children: p.runs.map((r) => new TextRun({ text: r.t, font: "Times New Roman", size: 26, bold: !!p.bold, italics: !!p.italic, highlight: r.u ? "yellow" : undefined })) })];
-      }) }] });
+      }), ...sealParas(D, seals)] }] });
   }
-  root.ND30 = { plainParse, plainBuild, parse, build, groupLines, strip };
+  root.ND30 = { plainParse, plainBuild, parse, build, groupLines, strip, suspect, sealBoxes };
 })(typeof window !== "undefined" ? window : globalThis);

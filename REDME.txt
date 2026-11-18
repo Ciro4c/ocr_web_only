@@ -1,0 +1,134 @@
+================================================================================
+     HƯỚNG DẪN CHI TIẾT: ĐƯA CODE LÊN GITHUB VÀ LẤY LINK WEB 
+================================================================================
+
+================================================================================
+PHẦN 1: LÀM BẰNG PHẦN MỀM (DÙNG VS CODE VÀ THANH SOURCE CONTROL)
+================================================================================
+
+Bước 1: Mở thư mục code trên máy tính bằng phần mềm VS Code
+------------------------------------------------------------
+1. Mở phần mềm **Visual Studio Code (VS Code)** trên máy tính của bạn.
+2. Trên bàn phím, nhấn tổ hợp phím tắt để mở thư mục:
+   - Windows: Nhấn giữ **`Ctrl` + `K`**, thả tay ra, rồi nhấn tiếp **`Ctrl` + `O`**.
+   - Mac: Nhấn giữ **`Cmd` + `K`**, thả tay ra, rồi nhấn tiếp **`Cmd` + `O`**.
+3. Một cửa sổ nhỏ xuất hiện, tìm đến thư mục chứa mã nguồn website của bạn, 
+   bấm chọn thư mục đó rồi bấm nút **`Select Folder`** (hoặc **`Open`**).
+
+Bước 2: Xử lý bảng cảnh báo bảo mật "Trust" (Bắt buộc)
+------------------------------------------------------
+1. Ngay khi thư mục được mở lên, VS Code sẽ hiện một bảng hỏi giữa màn hình: 
+   *"Do you trust the authors of the files in this folder?"*
+2. Bạn **bắt buộc phải bấm chọn** ô vuông **`Trust the authors of all files...`** 
+   (nếu có) và nhấn vào nút màu xanh dương **`Yes, I trust the authors`**.
+   *(Nếu bạn bấm No, phần mềm sẽ khóa tính năng quản lý code).*
+
+Bước 3: Khởi tạo Git và nhập nội dung Commit
+--------------------------------------------
+1. Nhìn sang **thanh dọc ngoài cùng bên trái** của VS Code, bấm vào biểu tượng 
+   **Source Control** (hình nhánh cây rẽ thành 3 chấm tròn, hoặc dùng phím tắt **`Ctrl` + `Shift` + `G`**).
+2. Tại bảng Source Control vừa mở ra, nếu có nút màu xanh **`Initialize Repository`**, 
+   hãy bấm vào đó (nếu không thấy nút này mà thấy danh sách file ở mục `Changes` thì bỏ qua).
+3. **ĐIỀU KIỆN TIÊN QUYẾT ĐỂ LƯU MỐC (COMMIT):**
+   - Nhìn lên phía trên danh sách file, tìm ô nhập văn bản có chữ mờ là 
+     `Message (Ctrl+Enter to commit...)`.
+   - Nhấp chuột vào ô đó và **gõ nội dung mô tả bất kỳ** (Ví dụ: gõ `Up code len web`). 
+     *Nếu để trống ô này, bạn sẽ không thể bấm nút Commit.*
+4. Sau khi đã gõ chữ xong, bấm vào nút màu xanh dương **`Commit`** nằm ngay bên dưới.
+   - Nếu có bảng hỏi *"There are no staged changes... Would you like to stage all?"*, 
+     hãy bấm **`Yes`**.
+
+Bước 4: Đẩy code lên GitHub (Publish)
+-------------------------------------
+1. Ngay sau khi bấm Commit xong, nút màu xanh ở góc đó sẽ đổi tên thành **`Publish Branch`**. 
+   Hãy bấm vào nút này.
+2. Nếu VS Code hỏi quyền đăng nhập tài khoản: Bấm **`Allow`** -> Trình duyệt web tự mở ra 
+   -> Bấm **`Authorize Visual-Studio-Code`** để kết nối.
+3. Nhìn lên **chính giữa phía trên cùng màn hình** (thanh công cụ xổ xuống), xuất hiện các lựa chọn:
+   - Nhấp chọn dòng: **`Publish to GitHub public repository`** (để web ở chế độ công khai miễn phí).
+4. Đợi khoảng 5 giây, góc dưới bên phải màn hình hiện thông báo *"Successfully published to GitHub"* 
+   là code của bạn đã nằm trên mây thành công!
+
+Bước 5: Bật tính năng Web (*.github.io) để lấy link truy cập
+-------------------------------------------------------------
+1. Mở trình duyệt web (Chrome, Edge...), truy cập vào trang chủ: https://github.com
+2. Đăng nhập tài khoản, nhìn sang **cột bên trái**, nhấp chuột vào đúng tên dự án 
+   bạn vừa đẩy lên (ví dụ: `ten_tai_khoan/ten_du_an`).
+3. Tại trang dự án, nhìn lên **thanh menu ngang phía trên cùng**, nhấp vào mục cuối cùng 
+   bên phải có chữ **`Settings`** (hình bánh răng cưa).
+4. Ở cột menu dọc bên phía trái, cuộn xuống nhóm `Code and automation`, nhấp chọn mục **`Pages`**.
+5. Nhìn sang khung bên phải, tìm phần **`Build and deployment`**:
+   - Dòng **Source**: Giữ nguyên `Deploy from a branch`.
+   - Dòng **Branch**: 
+     + Bấm vào ô đang ghi chữ **`None`**, chọn đổi thành **`main`** (hoặc `master`).
+     + Ô bên cạnh giữ nguyên là **`/ (root)`**.
+     + Bấm nút **`Save`** màu xanh lá ở bên cạnh.
+6. **Lấy link web:**
+   - Giữ nguyên trang này, đợi khoảng 1 đến 2 phút rồi nhấn phím **`F5`** (Tải lại trang).
+   - Ngay đầu trang "GitHub Pages" sẽ hiện khung thông báo màu xám nhạt kèm đường link xanh:
+     `https://ten_tai_khoan.github.io/ten_du_an/`
+   - Bấm vào nút **`Visit site`** để mở website trực tuyến của bạn. (Hoàn tất Phần 1).
+
+Bước 6 (Bổ sung): Triển khai (Deploy) nhanh bằng Extension trên VS Code
+------------------------------------------------------------------------
+Nếu bạn không muốn thao tác qua trình duyệt ở Bước 5, bạn có thể dùng Extension 
+trực tiếp trong VS Code để đưa web lên sóng:
+1. Trên VS Code, nhìn sang thanh menu dọc bên trái, bấm vào biểu tượng **Extensions** 
+   (hình 4 ô vuông ghép lại, hoặc dùng phím tắt **`Ctrl` + `Shift` + `X`**).
+2. Tại ô tìm kiếm, gõ từ khóa: **`GitHub Pages`** hoặc **`Deploy to GitHub Pages`** 
+   (hoặc các extension hỗ trợ Static Hosting phổ biến như *Static Files to Web* / *Vercel*).
+3. Chọn extension phù hợp (ví dụ: *GitHub Pages* của Rukanha hoặc *Deploy to GitHub Pages*), 
+   nhấn nút **`Install`** màu xanh dương để cài đặt.
+4. Sau khi cài xong, mở lại bảng lệnh (Command Palette) bằng phím tắt:
+   - Windows: **`Ctrl` + `Shift` + `P`**
+   - Mac: **`Cmd` + `Shift` + `P`**
+5. Gõ vào ô tìm kiếm dòng lệnh: `Deploy to GitHub Pages` (hoặc tên lệnh tương ứng của extension bạn cài).
+6. Nhấn `Enter` và làm theo các bước hướng dẫn hiển thị ở góc trên màn hình (chọn nhánh `main`, 
+   xác nhận thư mục chứa code).
+7. Sau khi Extension chạy xong, một thông báo thành công kèm theo đường link website 
+   sẽ hiển thị ngay góc dưới bên phải màn hình. Bạn chỉ cần bấm vào đó để xem trang web!
+
+================================================================================
+PHẦN 2: LÀM TRỰC TIẾP TRÊN TRANG WEB GITHUB (KHÔNG CẦN CÀI PHẦN MỀM)
+================================================================================
+
+Bước 1: Tạo kho lưu trữ (Repository) mới trên GitHub
+----------------------------------------------------
+1. Mở trình duyệt web, truy cập: https://github.com và đăng nhập tài khoản của bạn.
+2. Tại góc trên bên phải trang web, bấm vào dấu cộng **`+`** -> Chọn **`New repository`**.
+3. Tại ô **Repository name**: Nhập tên dự án của bạn (ví dụ: `my-website`, viết liền không dấu).
+4. Chọn chế độ: Tích chọn ô **`Public`** (Công khai để mọi người xem được web).
+5. **QUAN TRỌNG:** Ở phần cấu hình bên dưới, **HÃY TÍCH CHỌN** ô **`Add a README file`**.
+6. Cuộn xuống dưới cùng và bấm nút màu xanh lá: **`Create repository`**.
+
+Bước 2: Tải (Kéo thả) toàn bộ file code của bạn lên web
+-------------------------------------------------------
+1. Sau khi bấm tạo xong, trình duyệt chuyển bạn đến trang quản lý kho lưu trữ trống vừa tạo.
+2. Nhìn sang góc phải phía trên danh sách file, bấm vào nút **`Add file`** -> Chọn **`Upload files`**.
+3. Mở thư mục chứa code website trên máy tính của bạn:
+   - Dùng chuột **chọn tất cả các file và thư mục code** (HTML, CSS, JS, hình ảnh...).
+   - **Kéo thả trực tiếp toàn bộ các file đó** vào khung chữ nhật to có dòng chữ 
+     *"Drag files here to add them to your repository"* trên trang web.
+4. Đợi trình duyệt chạy thanh tải lên và hiển thị danh sách tên các file của bạn bên dưới.
+5. Cuộn xuống dưới cùng trang web, tìm khung **`Commit changes`**, giữ nguyên mặc định 
+   và bấm nút màu xanh lá **`Commit changes`**. (Code đã được lưu lên mây thành công).
+
+Bước 3: Bật tính năng Web (*.github.io) để lấy link truy cập
+-------------------------------------------------------------
+1. Tại trang quản lý dự án trên GitHub, nhìn lên **thanh menu ngang phía trên cùng**, 
+   nhấp vào mục **`Settings`** (biểu tượng bánh răng cưa ở góc phải).
+2. Nhìn sang **cột menu dọc bên trái**, cuộn xuống mục `Code and automation`, 
+   nhấp chọn dòng **`Pages`**.
+3. Nhìn sang khung nội dung chính bên phải, tìm phần **`Build and deployment`**:
+4. Tại dòng **Branch**: 
+   - Bấm vào ô đang ghi chữ **`none`**, chọn đổi thành **`main`** (hoặc `master`).
+   - Ô thư mục bên cạnh giữ nguyên là **`/ (root)`**.
+   - Bấm nút **`Save`** màu xanh lá ở bên cạnh.
+5. **Chờ và lấy link Website:**
+   - Giữ nguyên trang web, đợi khoảng **1 đến 2 phút**, sau đó nhấn phím **`F5`** 
+     trên bàn phím để tải lại trang.
+   - Ngay ở đầu khung "GitHub Pages", dòng chữ màu xanh xuất hiện:
+     `https://ten_tai_khoan.github.io/ten_du_an/`
+   - Bấm vào đường link đó hoặc nút **`Visit site`** để mở trang web trực tuyến của bạn. 
+     (Hoàn tất Phần 2).
+================================================================================

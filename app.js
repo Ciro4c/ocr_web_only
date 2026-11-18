@@ -9,6 +9,63 @@ const el = (tag, attrs = {}, ...kids) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ---------------- thông báo & công tắc AI (không AI / có AI) ---------------- */
+const AIS = { fails: 0, down: false };
+const aiOffNow = () => AIX.get("engine", "auto") === "off" || AIS.down;
+const hasKeyOk = () => AIX.keys().some((k) => k.status === "ok");
+function notice(key, msg, kind, actions = []) {
+  let box = $("#toasts"); if (!box) { box = el("div", { id: "toasts", role: "status", "aria-live": "polite" }); document.body.append(box); }
+  $(`[data-k="${key}"]`, box)?.remove();
+  const t = el("div", { class: "toast t-" + (kind || "warn"), "data-k": key }, el("div", {}, msg),
+    el("div", { class: "row" }, ...actions.map((a) => el("button", { class: a.primary ? "primary" : "", onclick: () => { t.remove(); a.fn(); } }, a.label)), el("button", { onclick: () => t.remove() }, "Đóng")));
+  box.append(t); if (kind === "ok") setTimeout(() => t.remove(), 6000);
+}
+function aiTagText() {
+  if (AIX.get("engine", "auto") === "off") return "Đang dùng không AI (Tesseract) · không gửi dữ liệu ra ngoài";
+  if (AIS.down) return "AI đang lỗi · đang dùng không AI (Tesseract)";
+  if (AIX.pausedLeft() > 0) return `AI tạm nghỉ ${AIX.pausedLeft()} giây (quá chậm), đang dùng Tesseract`;
+  return AIX.usable() ? "Bộ đọc AI đang bật · ảnh được gửi tới nhà cung cấp AI đã nhập key" : "Chạy ngay trong trình duyệt · không gửi dữ liệu ra ngoài";
+}
+function refreshAiTag() {
+  const t = $("#aitag"), lab = $(".aisw"), chk = $("#aichk"); if (t) t.textContent = aiTagText();
+  if (lab) lab.hidden = !hasKeyOk(); if (chk) chk.checked = !aiOffNow();
+  const sel = $('select[title="Bộ đọc chữ"]'); if (sel) sel.value = AIX.get("engine", "auto") === "off" ? "off" : "auto";
+}
+function toggleAI() {
+  if (aiOffNow()) { AIX.set("engine", "auto"); AIS.down = false; AIS.fails = 0; notice("ai", "Đã bật lại AI cho các trang tiếp theo.", "ok"); }
+  else { AIX.set("engine", "off"); notice("ai", "Đã chuyển sang không AI (Tesseract). Các trang tiếp theo đọc ngay trong máy, không gửi ảnh đi.", "ok"); }
+  refreshAiTag();
+}
+const retryAI = { label: "Thử lại AI", fn: () => { AIS.down = false; AIS.fails = 0; refreshAiTag(); } };
+const openAiSettings = { label: "Mở cài đặt AI", fn: () => (app.busy ? notice("ai2", "Đang xử lý, hãy mở tab ⚙ AI sau khi xong.", "warn") : setView("settings")) };
+function aiFailed(msg) {
+  AIS.fails++;
+  if (!hasKeyOk()) { AIS.down = true; notice("ai", "Tất cả key AI đã hỏng, hết hạn hoặc hết hạn mức. Tự động dùng không AI (Tesseract) để công việc không bị dừng.", "bad", [openAiSettings, retryAI]); }
+  else if (AIS.fails >= 2) { AIS.down = true; notice("ai", `AI lỗi liên tiếp (${msg}). Đã tự chuyển sang không AI (Tesseract) cho các trang còn lại.`, "bad", [retryAI, openAiSettings]); }
+  else notice("ai", `AI lỗi ở trang này (${msg}). Trang này đã đọc bằng Tesseract, trang sau sẽ thử AI lại.`, "warn", [{ label: "Dùng không AI từ giờ", primary: true, fn: toggleAI }]);
+  refreshAiTag();
+}
+function preflight() {
+  if (AIX.keys().length && !hasKeyOk() && AIX.get("engine", "auto") !== "off") notice("ai", "Key AI hiện không dùng được (hỏng, hết hạn hoặc đang kiểm tra). Sẽ đọc bằng Tesseract trong máy.", "warn", [openAiSettings]);
+}
+const verifyBox = () => { const c = el("input", { type: "checkbox", onchange: () => AIX.set("ai_verify", c.checked ? "1" : "0") }); c.checked = AIX.get("ai_verify", "0") === "1";
+  return el("span", { title: "Gửi thêm một lượt cho AI so lại với ảnh để sửa chữ sai. Chính xác hơn nhưng chậm hơn và tốn gấp đôi hạn mức." }, c, " Soát lại bằng AI"); };
+const verifyPrompt = (blocks) => "Đây là ảnh một trang văn bản tiếng Việt và bản chép OCR của nó dạng JSON. Hãy so từng chữ với ảnh và SỬA các chữ sai (dấu thanh, dấu mũ, số, ngày tháng, tên riêng). Giữ nguyên số block, \"role\", thứ tự và cấu trúc bảng; không thêm, bớt hay diễn đạt lại nội dung; chữ nào không chắc thì đánh dấu [?] ngay sau chữ đó. Chỉ trả về MỘT đối tượng JSON cùng định dạng {\"blocks\":[...]}.\n" + JSON.stringify({ blocks });
+function findSeals(c) {   // cắt con dấu đỏ / chữ ký số xanh từ ảnh trang để chèn vào Word
+  try {
+    const k = Math.min(1, 480 / Math.max(c.width, c.height)), w = Math.max(1, Math.round(c.width * k)), h = Math.max(1, Math.round(c.height * k));
+    const t = document.createElement("canvas"); t.width = w; t.height = h; const x = t.getContext("2d", { willReadFrequently: true }); x.drawImage(c, 0, 0, w, h);
+    return ND30.sealBoxes(x.getImageData(0, 0, w, h).data, w, h).map((b) => {
+      const sx = c.width / w, sy = c.height / h, X = Math.max(0, Math.floor(b.x0 * sx)), Y = Math.max(0, Math.floor(b.y0 * sy));
+      const cw = Math.min(c.width, Math.ceil(b.x1 * sx)) - X, ch = Math.min(c.height, Math.ceil(b.y1 * sy)) - Y, r = Math.min(1, 260 / cw), o = document.createElement("canvas");
+      o.width = Math.max(1, Math.round(cw * r)); o.height = Math.max(1, Math.round(ch * r));
+      o.getContext("2d").drawImage(c, X, Y, cw, ch, 0, 0, o.width, o.height);
+      return { data: o.toDataURL("image/png"), w: o.width, h: o.height };
+    });
+  } catch (e) { return []; }
+}
+AIX.onChange(refreshAiTag); setInterval(refreshAiTag, 2000);
+
 /* ---------------- thư viện (IndexedDB) ---------------- */
 const DB = {
   db: null,
@@ -270,7 +327,15 @@ async function refineLines(w, canvas, tl, onStatus) {
 
 /* nhận dạng một trang đã chuẩn bị */
 const mkRuns = (t) => { const out = []; String(t || "").split(/(\[\?\])/).forEach((x) => { if (x === "[?]") { if (out.length) out[out.length - 1].u = true; } else if (x) out.push({ t: x, u: false }); });
-  return out.length ? out : [{ t: "", u: false }]; };
+  return flagWords(out.length ? out : [{ t: "", u: false }]); };
+function flagWords(runs) {   // chữ không ghép được thành âm tiết tiếng Việt hợp lệ → nghi OCR sai → tô vàng
+  const o = [];
+  for (const r of runs) {
+    if (r.u) { o.push(r); continue; }
+    r.t.split(/(\s+)/).forEach((tok) => { if (!tok) return; const u = !/^\s+$/.test(tok) && ND30.suspect(tok), last = o[o.length - 1]; if (last && last.u === u) last.t += tok; else o.push({ t: tok, u }); });
+  }
+  return o.length ? o : [{ t: "", u: false }];
+}
 function plainFromBlocks(blocks) {
   return blocks.map((b) => b.role === "table" ? { table: (b.rows || []).map((r) => r.map((c) => String(c ?? ""))), runs: [], center: false }
     : { runs: mkRuns(b.text), center: b.align === "center", right: b.align === "right", bold: !!b.bold, italic: !!b.italic });
@@ -279,7 +344,7 @@ function modelFromBlocks(blocks) {
   const m = { warnings: [], head: { left: [], right: [] }, so: "", dia_danh: "", loai: "", ten_loai: "", trich_yeu: [], vv: "", kinh_gui: "", body: [], noi_nhan: [], chuc_vu: [], ho_ten: "", quyen: "" };
   const T = (b) => String(b.text || "").replace(/\[\?\]/g, "").trim();
   for (const b of blocks) {
-    if (b.role === "table") { (b.rows || []).forEach((r) => m.body.push({ runs: [{ t: r.join(" | "), u: false }] })); continue; }
+    if (b.role === "table") { m.body.push({ table: (b.rows || []).map((r) => r.map((c) => String(c ?? ""))), runs: [] }); continue; }
     const t = T(b); if (!t) continue;
     switch (b.role) {
       case "head_left": m.head.left.push({ t, runs: mkRuns(b.text) }); break;
@@ -289,12 +354,12 @@ function modelFromBlocks(blocks) {
       case "kinh_gui": m.kinh_gui = t; break;
       case "noi_nhan": if (!/^N[oơ]i nhận\s*:?\s*$/i.test(t)) m.noi_nhan.push(t); break;
       case "chuc_vu": m.chuc_vu.push(t); break; case "ho_ten": m.ho_ten = t; break;
-      default: m.body.push({ runs: mkRuns(b.text), bold: !!b.bold, italic: !!b.italic, heading: /^(Điều\s+\d+|Chương|Mục)/i.test(t) });
+      default: m.body.push({ runs: mkRuns(b.text), align: b.align === "center" ? "center" : b.align === "right" ? "right" : undefined, bold: !!b.bold, italic: !!b.italic, heading: /^(Điều\s+\d+|Chương|Mục)/i.test(t) });
     }
   }
   const unc = m.body.reduce((n, p) => n + p.runs.filter((r) => r.u).length, 0);
   if (unc) m.warnings.push(`${unc} chỗ AI không chắc chắn được tô vàng trong Word. Hãy rà soát.`);
-  if (!m.head.right.length) m.warnings.push("Không thấy Quốc hiệu. Nếu không phải công văn theo NĐ 30, hãy dùng Word văn bản trơn.");
+  if (!m.head.right.length && (m.so || m.ten_loai || m.head.left.length)) m.warnings.push("Văn bản có đầu văn bản nhưng không thấy Quốc hiệu. Hãy kiểm tra lại.");
   return m;
 }
 
@@ -332,19 +397,23 @@ const scanOf = (c) => { const k = Math.min(1, 1700 / c.width), t = document.crea
   t.getContext("2d").drawImage(c, 0, 0, t.width, t.height); return { data: t.toDataURL("image/jpeg", 0.82), w: t.width, h: t.height }; };
 async function ocrPage(p, onStatus) {
   p = await autoOrient(p, onStatus);
-  const r = await ocrPage0(p, onStatus); r.rotated = p.rotated || 0; if (p.keepScan) r.scan = scanOf(p.canvas); return r;
+  const r = await ocrPage0(p, onStatus); r.rotated = p.rotated || 0; if (p.keepScan) r.scan = scanOf(p.canvas); r.seals = findSeals(p.canvas); return r;
 }
 async function ocrPage0(p, onStatus) {
   let aiFail = null;
-  if (AIX.usable()) {
+  if (AIX.usable() && !AIS.down) {
     try {
       onStatus?.("AI đang đọc trang…");
-      const { blocks, via } = await AIX.read(p.canvas, onStatus);
+      let { blocks, via } = await AIX.read(p.canvas, onStatus); AIS.fails = 0;
+      if (AIX.get("ai_verify", "0") === "1") {
+        try { onStatus?.("AI đang soát lại…"); const v = await AIX.read(p.canvas, onStatus, { prompt: verifyPrompt(blocks) }); if (v.blocks.length >= blocks.length * 0.8) { blocks = v.blocks; via += " (đã soát)"; } }
+        catch (e) { console.warn("Soát lại lỗi, giữ bản đọc đầu:", e); }
+      }
       const t = document.createElement("canvas"); const k = Math.min(1, 800 / p.canvas.width); t.width = Math.round(p.canvas.width * k); t.height = Math.round(p.canvas.height * k);
       t.getContext("2d").drawImage(p.canvas, 0, 0, t.width, t.height);
       return { ai: blocks, via, words: [], tl: [], mean: 97, W: p.canvas.width, H: p.canvas.height, lowRes: false, srcW: p.srcW, thumb: t.toDataURL("image/jpeg", 0.55),
         text: blocks.map((b) => b.text || (b.rows || []).map((r) => r.join(" | ")).join("\n")).join("\n") };
-    } catch (e) { console.error(e); aiFail = e.message || String(e); }
+    } catch (e) { console.error(e); aiFail = e.message || String(e); aiFailed(aiFail); }
   }
   const r = await ocrPageTess(p, onStatus); if (aiFail) r.aiFail = aiFail; return r;
 }
@@ -383,7 +452,7 @@ function assemble(name, results, format, keepScans) {
   model.warnings = [...warnings, ...model.warnings];
   const unc = model.body.reduce((n, p) => n + p.runs.filter((r) => r.u).length, 0);
   return { id: new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14) + "_" + Math.random().toString(36).slice(2, 6),
-    name, date: new Date().toLocaleString("vi-VN"), status: "chua_kiem", format: format || getFormat(), plain, pages: results.length, thumbs: results.slice(0, 6).map((r) => r.thumb), model, uncertain: unc,
+    name, date: new Date().toLocaleString("vi-VN"), status: "chua_kiem", format: format || getFormat(), plain, pages: results.length, thumbs: results.slice(0, 6).map((r) => r.thumb), model, uncertain: unc, seals: results.flatMap((r) => r.seals || []).slice(0, 3),
     conf: results.reduce((a, r) => a + r.mean, 0) / results.length, scans: keepScans ? results.map((r) => r.scan).filter(Boolean) : undefined };
 }
 
@@ -398,14 +467,14 @@ async function convertFile(file, opts, onStatus) {
 function getFormat() { try { return localStorage.getItem("fmt") || "plain"; } catch { return "plain"; } }
 function setFormat(v) { try { localStorage.setItem("fmt", v); } catch {} }
 const fmtSelect = () => { const sel = el("select", { title: "Kiểu file Word xuất ra", onchange: () => setFormat(sel.value) },
-  el("option", { value: "plain" }, "Word văn bản trơn (chỉ nội dung)"), el("option", { value: "nd30" }, "Word dựng thể thức Nghị định 30"));
+  el("option", { value: "plain" }, "Word văn bản trơn (chỉ nội dung)"), el("option", { value: "nd30" }, "Word chuẩn trình bày (có Quốc hiệu thì dựng thể thức NĐ 30)"));
   sel.value = getFormat(); return sel; };
 const engineSelect = () => { const sel = el("select", { title: "Bộ đọc chữ", onchange: () => { AIX.set("engine", sel.value); render(); } },
   el("option", { value: "auto" }, AIX.usable() ? "Tự động: AI (đã có key)" : "Tự động: Tesseract (chưa có key AI)"), el("option", { value: "off" }, "Chỉ Tesseract (không gửi ảnh đi)"));
   sel.value = AIX.get("engine", "auto") === "off" ? "off" : "auto"; return sel; };
 const fmtOf = (d) => d.format || "plain";
 const sfx = (d) => (fmtOf(d) === "nd30" ? "_nd30" : "_ocr");
-const docxOf = (d) => docx.Packer.toBlob(fmtOf(d) === "nd30" ? ND30.build(d.model, docx) : ND30.plainBuild(d.plain || d.model.body, docx));
+const docxOf = (d) => docx.Packer.toBlob(fmtOf(d) === "nd30" ? ND30.build(d.model, docx, d.seals) : ND30.plainBuild(d.plain || d.model.body, docx, d.seals));
 const docxBlob = docxOf;
 const stem = (n) => n.replace(/\.[^.]+$/, "");
 function download(blob, name) { const a = el("a", { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); }
@@ -433,7 +502,7 @@ function setView(v, id = null) { if (app.view === "camera" && v !== "camera") st
 function header() {
   const tab = (v, t) => el("button", { class: "tab" + (app.view === v || (v === "library" && app.view === "edit") ? " on" : ""), onclick: () => setView(v) }, t);
   return el("header", {}, el("h1", {}, "📄 OCR văn bản"), el("nav", {}, tab("convert", "Hàng loạt"), tab("camera", "Chụp & OCR"), tab("library", "Thư viện"), tab("settings", "⚙ AI")),
-    el("span", { class: "tag" }, AIX.pausedLeft() > 0 ? `AI tạm nghỉ ${AIX.pausedLeft()} giây (quá chậm), đang dùng Tesseract` : AIX.usable() ? "Bộ đọc AI đang bật · ảnh được gửi tới nhà cung cấp AI đã nhập key" : "Chạy ngay trong trình duyệt · không gửi dữ liệu ra ngoài"));
+    el("span", { class: "tag", id: "aitag" }, aiTagText()), el("label", { class: "aisw", title: "Bật/tắt bộ đọc AI. Bỏ chọn để chỉ dùng Tesseract trong máy (không gửi ảnh đi).", hidden: !hasKeyOk() }, el("input", { type: "checkbox", id: "aichk", checked: !aiOffNow(), onchange: toggleAI }), " Dùng AI"));
 }
 
 const fmtMB = (b) => (b / 1048576).toFixed(b > 1e8 ? 0 : 1) + " MB";
@@ -465,7 +534,7 @@ function viewConvert() {
     try { const e = await navigator.storage?.estimate?.(); if (e && e.quota && e.usage + files.length * 150000 > e.quota * 0.9) warns.push("Dung lượng lưu của trình duyệt sắp đầy: hãy tải zip về và xóa bớt trong Thư viện."); } catch (_) {}
     if (AIX.usable() && !app.aiAck) { warns.push(`Đã có key AI nên ảnh sẽ được gửi tới máy chủ của nhà cung cấp AI (Gemini/Groq/OpenRouter/Anthropic). Nếu là văn bản mật, hãy chọn “Chỉ Tesseract” ở ô Bộ đọc.`); app.aiAck = true; }
     if (warns.length && !confirm(warns.join("\n\n") + "\n\nVẫn tiếp tục?")) return;
-    pool.size = nT; app.busy = true; app.cancel = false; app.lastBatch = []; bar.hidden = false; stop.hidden = false; stop.textContent = "⏹ Dừng"; bar.max = files.length; bar.value = 0; status.textContent = "";
+    preflight(); pool.size = nT; app.busy = true; app.cancel = false; app.lastBatch = []; bar.hidden = false; stop.hidden = false; stop.textContent = "⏹ Dừng"; bar.max = files.length; bar.value = 0; status.textContent = "";
     let done = 0, ok = 0, next = 0; const t0 = performance.now();
     const worker = async () => {
       while (!app.cancel && next < files.length) {
@@ -498,7 +567,7 @@ function viewConvert() {
   return el("main", {}, el("h2", {}, "OCR hàng loạt"),
     el("p", { class: "muted" }, "Chọn nhiều ảnh/PDF hoặc cả thư mục. Mặc định xuất Word văn bản trơn (chỉ chép nội dung); chọn “Kiểu Word” để dựng theo thể thức Nghị định 30. Mỗi văn bản được lưu vào Thư viện của trình duyệt này. Lần đầu mở sẽ tải bộ nhận dạng tiếng Việt (~10 MB)."),
     drop, input, folder,
-    el("div", { class: "row" }, el("label", {}, "Hướng ảnh: ", rotate), el("label", {}, "Số luồng: ", threads), el("label", {}, "Bộ đọc: ", engineSelect()), el("label", {}, "Kiểu Word: ", fmtSelect()), el("button", { onclick: () => folder.click() }, "Chọn cả thư mục…"), stop),
+    el("div", { class: "row" }, el("label", {}, "Hướng ảnh: ", rotate), el("label", {}, "Số luồng: ", threads), el("label", {}, "Bộ đọc: ", engineSelect()), el("label", {}, verifyBox()), el("label", {}, "Kiểu Word: ", fmtSelect()), el("button", { onclick: () => folder.click() }, "Chọn cả thư mục…"), stop),
     bar, summary, status, after,
     el("details", { class: "note" }, el("summary", {}, "Giới hạn của bản chạy trên trình duyệt"),
       el("ul", {}, el("li", {}, "Không có giới hạn cứng về số file hay dung lượng; phần mềm chỉ cảnh báo khi lô lớn (trên 100 file hoặc 500 MB), file trên 40 MB, hoặc bộ nhớ lưu của trình duyệt sắp đầy."),
@@ -607,7 +676,7 @@ async function viewEdit() {
   const plain = (runs) => runs.map((r) => r.t).join("");
   if (!d.plain) d.plain = m.body.map((p) => ({ runs: p.runs, center: false }));
   const fmtSel = el("select", { onchange: async () => { d.format = fmtSel.value; await DB.put(d); render(); } },
-    el("option", { value: "plain" }, "Word văn bản trơn"), el("option", { value: "nd30" }, "Word thể thức Nghị định 30")); fmtSel.value = fmtOf(d);
+    el("option", { value: "plain" }, "Word văn bản trơn"), el("option", { value: "nd30" }, "Word chuẩn trình bày (thể thức NĐ 30 nếu là công văn)")); fmtSel.value = fmtOf(d);
   const body = (fmtOf(d) === "nd30" ? m.body : d.plain).map((p, k) => p.table ? field(`Bảng (mỗi dòng một hàng, các ô cách bằng “ | ”)`, () => p.table.map((r) => r.join(" | ")).join("\n"), (v) => { p.table = v.split("\n").filter(Boolean).map((r) => r.split("|").map((c) => c.trim())); }, true) : field(`Đoạn ${k + 1}${p.runs.some((r) => r.u) ? " (có chữ nghi sai)" : ""}`, () => plain(p.runs), (v) => { p.runs = [{ t: v, u: false }]; }, true));
   const imgs = (d.scans?.length ? d.scans.map((x) => x.data) : d.thumbs).map((t) => el("img", { src: t, alt: "trang" }));
   const msg = el("span", { class: "muted" });

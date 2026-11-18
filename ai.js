@@ -190,7 +190,7 @@ Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới c�
   const call = {
     async gemini(u, b64, mime, o = {}) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${u.m}:generateContent?key=${encodeURIComponent(u.k.key)}`;
-      const body = (think) => JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: prompt }] }],
+      const body = (think) => JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: o.prompt || prompt }] }],
         generationConfig: { responseMimeType: "application/json", temperature: 0, maxOutputTokens: o.test ? 1500 : 16000, ...(think ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } });
       const send = (think) => jfetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body(think), timeout: o.timeout || (o.test ? 30000 : 120000) });
       let j; try { j = await send(/flash/.test(u.m)); } catch (e) { if (e.status === 400 && /think/i.test(e.message)) j = await send(false); else throw e; }   // tắt "suy nghĩ" cho nhanh
@@ -198,12 +198,12 @@ Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới c�
     },
     async openai(u, b64, mime, url, o = {}) {
       const j = await jfetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + u.k.key },
-        body: JSON.stringify({ model: u.m, temperature: 0, max_tokens: o.test ? 1500 : 8000, messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }] }), timeout: o.timeout || (o.test ? 30000 : 120000) });
+        body: JSON.stringify({ model: u.m, temperature: 0, max_tokens: o.test ? 1500 : 8000, messages: [{ role: "user", content: [{ type: "text", text: o.prompt || prompt }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }] }), timeout: o.timeout || (o.test ? 30000 : 120000) });
       const t = j.choices?.[0]?.message?.content; if (!t) throw new Error("Model không trả nội dung"); return t;
     },
     async anthropic(u, b64, mime, o = {}) {
       const j = await jfetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": u.k.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({ model: u.m, max_tokens: o.test ? 1500 : 16000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: prompt }] }] }), timeout: o.timeout || (o.test ? 30000 : 120000) });
+        body: JSON.stringify({ model: u.m, max_tokens: o.test ? 1500 : 16000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: o.prompt || prompt }] }] }), timeout: o.timeout || (o.test ? 30000 : 120000) });
       return (j.content || []).filter((x) => x.type === "text").map((x) => x.text).join("");
     },
   };
@@ -213,7 +213,7 @@ Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới c�
   };
 
   /* đọc một trang: thử lần lượt các (key, model); lỗi giới hạn → nghỉ đơn vị đó rồi chuyển key khác */
-  async function read(canvas, onStatus) {
+  async function read(canvas, onStatus, popt) {
     const long = Math.max(canvas.width, canvas.height), k = Math.min(1, 2600 / long); let c = canvas;
     if (k < 1) { c = document.createElement("canvas"); c.width = Math.round(canvas.width * k); c.height = Math.round(canvas.height * k); c.getContext("2d").drawImage(canvas, 0, 0, c.width, c.height); }
     const b64 = c.toDataURL("image/jpeg", 0.92).split(",")[1], skip = new Set(); let last = null;
@@ -225,7 +225,7 @@ Các block theo thứ tự đọc (đọc hết cột trái rồi mới tới c�
         if (u.soonest < Math.min(70000, left()) && u.soonest > 0 && tries < 8) { onStatus?.(`Các key đang chờ hạn mức, đợi ${Math.ceil(u.soonest / 1000)} giây…`); await wait(u.soonest + 500); continue; }
         break;
       }
-      const o = { timeout: Math.max(3000, Math.min(L.each * 1000, left())) };
+      const o = { timeout: Math.max(3000, Math.min(L.each * 1000, left())), prompt: popt && popt.prompt };
       try {
         onStatus?.(`AI (${NAMES[u.k.provider]} · ${u.m}) đang đọc trang…`); var t1 = performance.now();
         const txt = u.k.provider === "gemini" ? await call.gemini(u, b64, "image/jpeg", o) : u.k.provider === "anthropic" ? await call.anthropic(u, b64, "image/jpeg", o)
